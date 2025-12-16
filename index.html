@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>UNDERTALE Web (RU)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #000;
+            color: #fff;
+            font-family: 'Press Start 2P', cursive;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            touch-action: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+            background-color: #000;
+            image-rendering: pixelated;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* CRT Scanline Effect */
+        .scanlines::before {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 10;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+        
+        .scanlines::after {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: rgba(18, 16, 16, 0.1);
+            opacity: 0;
+            z-index: 10;
+            pointer-events: none;
+            animation: flicker 0.15s infinite;
+        }
+
+        @keyframes flicker {
+            0% { opacity: 0.027; }
+            5% { opacity: 0.04; }
+            10% { opacity: 0.03; }
+        }
+
+        /* Mobile Controls */
+        #mobile-controls {
+            display: none;
+            width: 100%;
+            max-width: 640px;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+            margin-top: 10px;
+        }
+
+        @media (max-width: 800px) {
+            #game-container {
+                width: 100vw;
+                height: 75vw; /* 4:3 aspect ratio */
+                max-height: 70vh;
+                max-width: 93.33vh; /* 4:3 of height */
+            }
+            #mobile-controls {
+                display: flex;
+            }
+        }
+
+        .dpad {
+            position: relative;
+            width: 120px;
+            height: 120px;
+        }
+
+        .dpad-btn {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 5px;
+        }
+        
+        .dpad-btn:active, .action-btn:active {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        .d-up { top: 0; left: 40px; }
+        .d-down { bottom: 0; left: 40px; }
+        .d-left { top: 40px; left: 0; }
+        .d-right { top: 40px; right: 0; }
+
+        .actions {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .action-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            color: white;
+            font-family: 'Press Start 2P';
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Text Styles for Overlays if needed */
+        .hidden { display: none; }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+
+    <div id="game-container" class="scanlines">
+        <canvas id="gameCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div id="mobile-controls">
+        <div class="dpad">
+            <div class="dpad-btn d-up" data-key="ArrowUp"></div>
+            <div class="dpad-btn d-left" data-key="ArrowLeft"></div>
+            <div class="dpad-btn d-right" data-key="ArrowRight"></div>
+            <div class="dpad-btn d-down" data-key="ArrowDown"></div>
+        </div>
+        <div class="actions">
+            <div class="action-btn" data-key="z">Z</div>
+            <div class="action-btn" data-key="Enter">Ent</div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * ENGINE CORE & UTILS
+         */
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const FPS = 60;
+        
+        // Input State
+        const keys = {
+            ArrowUp: false,
+            ArrowDown: false,
+            ArrowLeft: false,
+            ArrowRight: false,
+            z: false,
+            Enter: false,
+            x: false // 'x' usually skips or runs, mapped to Enter here for simplicity in controls
+        };
+
+        const keysPressed = {}; // For single trigger events
+
+        // Audio Context
+        let audioCtx;
+        
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+            
+            if (type === 'blip') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(800, now);
+                gain.gain.setValueAtTime(0.1, now);
+                osc.start(now);
+                osc.stop(now + 0.05);
+            } else if (type === 'select') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(440, now);
+                gain.gain.setValueAtTime(0.1, now);
+                osc.start(now);
+                osc.stop(now + 0.1);
+            } else if (type === 'hit') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(150, now);
+                osc.frequency.exponentialRampToValueAtTime(0.01, now + 0.2);
+                gain.gain.setValueAtTime(0.2, now);
+                osc.start(now);
+                osc.stop(now + 0.2);
+            } else if (type === 'battle_start') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(100, now);
+                osc.frequency.linearRampToValueAtTime(600, now + 0.1);
+                gain.gain.setValueAtTime(0.1, now);
+                osc.start(now);
+                osc.stop(now + 0.5);
+            }
+        }
+
+        // Event Listeners
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                keys[e.key] = true;
+                keysPressed[e.key] = true;
+                initAudio(); // Initialize audio on first interaction
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) keys[e.key] = false;
+        });
+
+        // Touch Controls
+        const btns = document.querySelectorAll('.dpad-btn, .action-btn');
+        btns.forEach(btn => {
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const key = btn.getAttribute('data-key');
+                keys[key] = true;
+                keysPressed[key] = true;
+                initAudio();
+            });
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                const key = btn.getAttribute('data-key');
+                keys[key] = false;
+            });
+        });
+
+        function wasPressed(key) {
+            const pressed = keysPressed[key];
+            keysPressed[key] = false;
+            return pressed;
+        }
+
+        /**
+         * ASSETS (SVG Paths)
+         */
+        const SVG_HEART = new Path2D("M8 0 L8 4 L4 4 L4 8 L0 8 L0 18 L8 26 L16 18 L16 8 L12 8 L12 4 L8 4 Z");
+        const SVG_FRISK = {
+            draw: (ctx, x, y, frame) => {
+                ctx.fillStyle = '#654321'; // Hair
+                ctx.fillRect(x + 4, y, 12, 4);
+                ctx.fillRect(x, y+4, 20, 6);
+                ctx.fillStyle = '#ffcc99'; // Face
+                ctx.fillRect(x + 4, y+6, 12, 6);
+                ctx.fillStyle = '#0000ff'; // Shirt
+                ctx.fillRect(x+2, y+12, 16, 10);
+                ctx.fillStyle = '#ff00ff'; // Stripes
+                ctx.fillRect(x+4, y+16, 12, 2);
+                ctx.fillRect(x+4, y+19, 12, 2);
+                ctx.fillStyle = '#654321'; // Pants
+                ctx.fillRect(x+4, y+22, 12, 4);
+                // Simple animation
+                if (Math.floor(frame / 10) % 2 === 0) {
+                     ctx.fillRect(x+2, y+26, 4, 4); // Left leg
+                     ctx.fillRect(x+14, y+26, 4, 4); // Right leg
+                } else {
+                     ctx.fillRect(x+2, y+25, 4, 4); 
+                     ctx.fillRect(x+14, y+25, 4, 4);
+                }
+            }
+        };
+
+        /**
+         * GAME STATE MACHINE
+         */
+        const STATE = {
+            START: 0,
+            INTRO: 1,
+            OVERWORLD: 2,
+            BATTLE: 3
+        };
+
+        let currentState = STATE.START;
+        let globalFrame = 0;
+
+        // Player Stats
+        const player = {
+            x: 320,
+            y: 240,
+            w: 20,
+            h: 30,
+            hp: 20,
+            maxHp: 20,
+            lv: 1,
+            name: "Frisk",
+            room: 0,
+            facing: 'down',
+            speed: 3
+        };
+
+        /**
+         * STATE: START SCREEN
+         */
+        function updateStart() {
+            if (wasPressed('z') || wasPressed('Enter')) {
+                playSound('select');
+                currentState = STATE.INTRO;
+                initIntro();
+            }
+        }
+
+        function drawStart() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, 640, 480);
+            
+            // Title
+            ctx.fillStyle = 'white';
+            ctx.font = '40px "Press Start 2P"';
+            ctx.textAlign = 'center';
+            ctx.fillText('UNDERTALE', 320, 150);
+
+            // Blinking Text
+            if (Math.floor(globalFrame / 30) % 2 === 0) {
+                ctx.fillStyle = '#AAAAAA';
+                ctx.font = '16px "Press Start 2P"';
+                ctx.fillText('[ НАЖМИТЕ Z ИЛИ ENTER ]', 320, 300);
+            }
+            
+            ctx.fillStyle = '#666';
+            ctx.font = '12px "Press Start 2P"';
+            ctx.fillText('Сделано для телефона', 320, 400);
+        }
+
+        /**
+         * STATE: INTRO (Flowey)
+         */
+        let introState = 0;
+        let introDialogIndex = 0;
+        let introTextTimer = 0;
+        let displayedText = "";
+        let floweyEvil = false;
+        let introBullets = [];
+        let introPlayerPos = { x: 320, y: 350 };
+        let introHealed = false;
+
+        const introScript = [
+            "Приветик! Я ФЛАУИ.",
+            "ЦВЕТОЧЕК по имени ФЛАУИ!",
+            "Ты новенький, да?",
+            "Внизу любовь передаётся через...",
+            "Маленькие белые...",
+            "'дружелюбные лепестки'."
+        ];
+        const evilScript = [
+            "ТЫ ИДИОТ.",
+            "В этом мире...",
+            "УБЕЙ или БУДЬ УБИТЫМ."
+        ];
+
+        function initIntro() {
+            introState = 0; // 0: Dialog, 1: Spawning Box, 2: Bullet Hell, 3: Betrayal, 4: Rescue
+            introDialogIndex = 0;
+            floweyEvil = false;
+            introBullets = [];
+            player.hp = 20;
+            displayedText = "";
+            introTextTimer = 0;
+        }
+
+        function updateIntro() {
+            // Typing effect
+            const currentScript = floweyEvil ? evilScript : introScript;
+            const targetText = currentScript[introDialogIndex];
+            
+            if (introState === 0 || introState === 3) {
+                if (displayedText.length < targetText.length) {
+                    if (globalFrame % 2 === 0) {
+                        displayedText += targetText[displayedText.length];
+                        playSound('blip');
+                    }
+                } else {
+                    if (wasPressed('z')) {
+                        introDialogIndex++;
+                        displayedText = "";
+                        if (introDialogIndex >= currentScript.length) {
+                            if (!floweyEvil) {
+                                introState = 1; // Start battle demo
+                                initIntroBattle();
+                            } else {
+                                introState = 4; // Rescue
+                            }
+                        }
+                    }
+                }
+            } else if (introState === 2) {
+                // Bullet Logic
+                updateIntroBattle();
+            } else if (introState === 4) {
+                 // Transition to Overworld
+                 setTimeout(() => {
+                    currentState = STATE.OVERWORLD;
+                 }, 2000);
+            }
+        }
+
+        function initIntroBattle() {
+             introState = 2;
+             // Spawn bullets in arc
+             for(let i=0; i<5; i++) {
+                 introBullets.push({
+                     x: 250 + i * 35,
+                     y: 200 - Math.abs(i-2)*10,
+                     vx: (i-2)*0.5,
+                     vy: 2
+                 });
+             }
+        }
+
+        function updateIntroBattle() {
+            // Move player
+            if (keys.ArrowLeft) introPlayerPos.x -= 2;
+            if (keys.ArrowRight) introPlayerPos.x += 2;
+            if (keys.ArrowUp) introPlayerPos.y -= 2;
+            if (keys.ArrowDown) introPlayerPos.y += 2;
+
+            // Move Bullets
+            let hit = false;
+            introBullets.forEach(b => {
+                b.x += b.vx;
+                b.y += b.vy;
+                // Collision
+                const dx = b.x - introPlayerPos.x;
+                const dy = b.y - introPlayerPos.y;
+                if (Math.sqrt(dx*dx + dy*dy) < 10) {
+                    hit = true;
+                }
+            });
+
+            if (hit && !floweyEvil) {
+                playSound('hit');
+                player.hp = 1;
+                floweyEvil = true;
+                introState = 3; // Evil dialogue
+                introDialogIndex = 0;
+                displayedText = "";
+                introBullets = []; // Clear old bullets
+                // Spawn circle trap
+                for(let i=0; i<20; i++) {
+                    let angle = (Math.PI * 2 / 20) * i;
+                    introBullets.push({
+                        x: introPlayerPos.x + Math.cos(angle) * 100,
+                        y: introPlayerPos.y + Math.sin(angle) * 100,
+                        vx: -Math.cos(angle) * 0.5,
+                        vy: -Math.sin(angle) * 0.5
+                    });
+                }
+            }
+        }
+
+        function drawIntro() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0,0,640,480);
+
+            // Flowey
+            drawFlowey(320, 100, floweyEvil);
+
+            // Speech Bubble
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(400, 50, 200, 100);
+            ctx.fillStyle = 'white';
+            ctx.font = '16px "Press Start 2P"'; // Intro usually VT323 but keeping PS2P for RU consistency
+            wrapText(ctx, displayedText, 410, 80, 180, 20);
+
+            if (introState === 2 || introState === 3) {
+                // Battle Box
+                ctx.strokeStyle = 'white';
+                ctx.strokeRect(220, 250, 200, 200);
+                
+                // Heart
+                ctx.fillStyle = 'red';
+                ctx.save();
+                ctx.translate(introPlayerPos.x, introPlayerPos.y);
+                ctx.scale(1.5, 1.5); // SVG path is small
+                ctx.fill(SVG_HEART);
+                ctx.restore();
+
+                // Bullets
+                ctx.fillStyle = 'white';
+                introBullets.forEach(b => {
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, 4, 0, Math.PI*2);
+                    ctx.fill();
+                });
+
+                // HP Display
+                ctx.fillStyle = 'yellow';
+                ctx.font = '20px "Press Start 2P"';
+                ctx.textAlign = 'center';
+                ctx.fillText(`LV ${player.lv}   HP ${player.hp}/20`, 320, 470);
+            }
+
+            if (introState === 4) {
+                // Rescue Flash
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0,0,640,480);
+            }
+        }
+
+        function drawFlowey(x, y, evil) {
+            ctx.fillStyle = 'yellow';
+            // Petals
+            for(let i=0; i<6; i++) {
+                let angle = (Math.PI*2/6)*i + globalFrame*0.02;
+                ctx.beginPath();
+                ctx.arc(x + Math.cos(angle)*30, y + Math.sin(angle)*30, 15, 0, Math.PI*2);
+                ctx.fill();
+            }
+            // Face
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(x, y, 25, 0, Math.PI*2);
+            ctx.fill();
+            // Eyes/Mouth
+            ctx.fillStyle = 'black';
+            if (!evil) {
+                ctx.fillRect(x-10, y-5, 5, 8);
+                ctx.fillRect(x+5, y-5, 5, 8);
+                ctx.beginPath(); ctx.arc(x, y+10, 5, 0, Math.PI); ctx.fill();
+            } else {
+                // Evil face
+                ctx.font = '20px Arial';
+                ctx.fillText('XX', x-12, y+5);
+                ctx.beginPath();
+                ctx.arc(x, y+15, 10, Math.PI, 0); // Frown
+                ctx.stroke();
+            }
+        }
+
+        /**
+         * STATE: OVERWORLD
+         */
+        const rooms = [
+            { id: 0, color: '#220022', walls: [], text: "Поляна цветов", trigger: {x: 600, y: 240, to: 1, px: 50, py: 240} },
+            { id: 1, color: '#330033', walls: [{x:200, y:100, w:20, h:100}], text: "Звезда сохранения", save: {x:320, y:240}, trigger: {x: 600, y: 240, to: 2, px: 50, py: 240}, back: {x: 0, y: 240, to: 0, px: 550, py: 240} },
+            { id: 2, color: '#440044', spikes: {x:400, y:200, active:true}, switch: {x:400, y:100}, walls: [], back: {x: 0, y: 240, to: 1, px: 550, py: 240} }
+        ];
+
+        let msgTimer = 0;
+        let msgText = "";
+
+        function updateOverworld() {
+            let dx = 0;
+            let dy = 0;
+            if (keys.ArrowUp) dy = -player.speed;
+            if (keys.ArrowDown) dy = player.speed;
+            if (keys.ArrowLeft) dx = -player.speed;
+            if (keys.ArrowRight) dx = player.speed;
+
+            // Simple movement & Collision
+            let nx = player.x + dx;
+            let ny = player.y + dy;
+            let room = rooms[player.room];
+
+            // Boundaries
+            if (nx < 0) {
+                if (room.back) changeRoom(room.back);
+                else nx = 0;
+            }
+            if (nx > 620) {
+                if (room.trigger) changeRoom(room.trigger);
+                else nx = 620;
+            }
+            if (ny < 0) ny = 0;
+            if (ny > 450) ny = 450;
+
+            // Wall Collision
+            if (room.walls) {
+                room.walls.forEach(w => {
+                    if (nx < w.x + w.w && nx + player.w > w.x && ny < w.y + w.h && ny + player.h > w.y) {
+                         nx = player.x; ny = player.y; // Stop
+                    }
+                });
+            }
+            
+            // Spike Collision
+            if (room.spikes && room.spikes.active) {
+                 if (nx < room.spikes.x + 40 && nx + player.w > room.spikes.x && ny < room.spikes.y + 40 && ny + player.h > room.spikes.y) {
+                     nx = player.x; ny = player.y;
+                     showMsg("Шипы преграждают путь!");
+                 }
+            }
+
+            player.x = nx;
+            player.y = ny;
+
+            // Interactions
+            if (wasPressed('z')) {
+                // Save Point
+                if (room.save && dist(player, room.save) < 40) {
+                    player.hp = player.maxHp;
+                    playSound('select');
+                    showMsg("HP восстановлено.");
+                }
+                // Switch
+                if (room.switch && dist(player, room.switch) < 40) {
+                    playSound('select');
+                    if (room.spikes.active) {
+                        room.spikes.active = false;
+                        showMsg("Щелк! Шипы убрались.");
+                    } else {
+                         showMsg("Переключатель уже нажат.");
+                    }
+                }
+            }
+
+            // Random Encounter
+            if ((dx !== 0 || dy !== 0) && Math.random() < 0.005) {
+                playSound('battle_start');
+                startBattle();
+            }
+        }
+
+        function changeRoom(warp) {
+            player.room = warp.to;
+            player.x = warp.px;
+            player.y = warp.py;
+        }
+
+        function drawOverworld() {
+            let room = rooms[player.room];
+            ctx.fillStyle = room.color;
+            ctx.fillRect(0,0,640,480);
+
+            // Floor details (SVG Paths usually, just rects here for simplicity)
+            ctx.fillStyle = '#662266';
+            ctx.fillRect(0, 100, 640, 280); // Pathway
+
+            // Objects
+            if (room.save) {
+                ctx.fillStyle = 'yellow';
+                drawStar(room.save.x, room.save.y, 5, 10, 5);
+            }
+            if (room.switch) {
+                ctx.fillStyle = 'gray';
+                ctx.fillRect(room.switch.x, room.switch.y, 20, 20);
+                ctx.fillStyle = room.spikes.active ? 'red' : 'green';
+                ctx.fillRect(room.switch.x+5, room.switch.y+5, 10, 10);
+            }
+            if (room.spikes && room.spikes.active) {
+                ctx.fillStyle = 'silver';
+                for(let i=0; i<4; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(room.spikes.x + i*10, room.spikes.y + 20);
+                    ctx.lineTo(room.spikes.x + 5 + i*10, room.spikes.y);
+                    ctx.lineTo(room.spikes.x + 10 + i*10, room.spikes.y + 20);
+                    ctx.fill();
+                }
+            }
+            
+            // Player
+            SVG_FRISK.draw(ctx, player.x, player.y, globalFrame);
+
+            // Message Box
+            if (msgTimer > 0) {
+                msgTimer--;
+                ctx.fillStyle = 'black';
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 4;
+                ctx.fillRect(50, 350, 540, 100);
+                ctx.strokeRect(50, 350, 540, 100);
+                ctx.fillStyle = 'white';
+                ctx.font = '16px "Press Start 2P"';
+                ctx.fillText(msgText, 70, 400);
+            }
+        }
+
+        function showMsg(txt) {
+            msgText = txt;
+            msgTimer = 120; // 2 seconds
+        }
+
+        /**
+         * STATE: BATTLE
+         */
+        let battleState = 0; // 0:MENU, 1:PLAYER_ATTACK_AIM, 2:ENEMY_TURN, 3:VICTORY, 4:TEXT_DISPLAY
+        let battleMenuSelection = 0; // 0:Fight, 1:Act, 2:Item, 3:Mercy
+        let battleSubMenu = -1; // -1: Main, 0..N: Sub items
+        let battleText = "";
+        let enemyName = "Фроггит";
+        let enemyHP = 30;
+        let enemyMaxHP = 30;
+        let enemySpareable = false;
+        
+        // Attack Bar
+        let attackBarPos = 0;
+        let attackBarDir = 5;
+
+        // Enemy Bullets
+        let battleBullets = [];
+        let battleTimer = 0;
+        let heartPos = {x: 320, y: 320};
+        
+        function startBattle() {
+            currentState = STATE.BATTLE;
+            battleState = 0;
+            battleMenuSelection = 0;
+            battleSubMenu = -1;
+            enemyHP = 30;
+            enemySpareable = false;
+            battleText = "Появляется Фроггит!";
+            playSound('battle_start');
+        }
+
+        function updateBattle() {
+            if (battleState === 0) { // Main Menu
+                if (wasPressed('ArrowRight')) { battleMenuSelection = (battleMenuSelection + 1) % 4; playSound('select'); }
+                if (wasPressed('ArrowLeft')) { battleMenuSelection = (battleMenuSelection + 3) % 4; playSound('select'); }
+                if (wasPressed('z')) {
+                    playSound('select');
+                    if (battleMenuSelection === 0) { // FIGHT
+                        battleState = 1;
+                        attackBarPos = 0;
+                    } else if (battleMenuSelection === 1) { // ACT
+                        battleState = 4; battleSubMenu = 0;
+                    } else if (battleMenuSelection === 2) { // ITEM
+                         battleState = 4; battleSubMenu = 1;
+                    } else if (battleMenuSelection === 3) { // MERCY
+                         battleState = 4; battleSubMenu = 2;
+                    }
+                }
+            } else if (battleState === 1) { // Aiming
+                attackBarPos += attackBarDir;
+                if (attackBarPos > 540 || attackBarPos < 0) attackBarDir *= -1;
+                
+                if (wasPressed('z')) {
+                    // Calculate Damage
+                    let dist = Math.abs(attackBarPos - 270); // Center is roughly 270 relative to box
+                    let dmg = Math.floor((100 - dist/3) / 5);
+                    if (dmg < 0) dmg = 0;
+                    enemyHP -= dmg;
+                    playSound('hit');
+                    battleText = `Вы ударили на ${dmg} урона.`;
+                    battleState = 4; // Show text then enemy turn
+                    battleSubMenu = 3; // Special flag for text delay
+                    if (enemyHP <= 0) {
+                         battleText = "ВЫ ПОБЕДИЛИ!";
+                         battleState = 3;
+                    }
+                }
+            } else if (battleState === 4) { // Submenus or Text
+                if (battleSubMenu === 0) { // ACT Menu
+                     if (wasPressed('z')) {
+                         battleText = "Фроггит не понял, что вы сказали, но польщен.";
+                         enemySpareable = true;
+                         battleSubMenu = 3;
+                     }
+                } else if (battleSubMenu === 1) { // ITEM
+                    if (wasPressed('z')) {
+                        player.hp = Math.min(player.hp + 10, player.maxHp);
+                        battleText = "Вы съели Ирис. пирог. HP восс.";
+                        playSound('select');
+                        battleSubMenu = 3;
+                    }
+                } else if (battleSubMenu === 2) { // MERCY
+                    if (wasPressed('z')) {
+                        if (enemySpareable) {
+                             battleText = "ВЫ ПОБЕДИЛИ!";
+                             battleState = 3;
+                        } else {
+                             battleText = "Вы не можете сбежать!";
+                             battleSubMenu = 3;
+                        }
+                    }
+                } else if (battleSubMenu === 3) { // Just waiting to read text
+                    if (wasPressed('z')) {
+                         startEnemyTurn();
+                    }
+                }
+            } else if (battleState === 2) { // Enemy Turn (Bullet Hell)
+                if (battleTimer > 0) {
+                    battleTimer--;
+                    // Move Heart
+                    if (keys.ArrowLeft) heartPos.x = Math.max(255, heartPos.x - 3);
+                    if (keys.ArrowRight) heartPos.x = Math.min(385, heartPos.x + 3);
+                    if (keys.ArrowUp) heartPos.y = Math.max(255, heartPos.y - 3);
+                    if (keys.ArrowDown) heartPos.y = Math.min(385, heartPos.y + 3);
+
+                    // Spawn flies
+                    if (globalFrame % 20 === 0) {
+                        battleBullets.push({x: 250, y: 380, vx: (Math.random()-0.5)*4, vy: -Math.random()*4});
+                    }
+
+                    // Update Bullets
+                    battleBullets.forEach(b => {
+                        b.x += b.vx;
+                        b.y += b.vy;
+                        b.vy += 0.05; // Gravity
+                        // Collision
+                        let dx = b.x - heartPos.x;
+                        let dy = b.y - heartPos.y;
+                        if (Math.sqrt(dx*dx + dy*dy) < 8) {
+                            player.hp--;
+                            playSound('hit');
+                            // Push away slightly to avoid instant death
+                            heartPos.x += dx*2; 
+                            if (player.hp <= 0) {
+                                currentState = STATE.START; // Game Over reset
+                            }
+                        }
+                    });
+                } else {
+                    battleState = 0; // Back to Menu
+                    battleText = "Фроггит ждет ваших действий.";
+                }
+            } else if (battleState === 3) { // Victory
+                if (wasPressed('z')) {
+                     currentState = STATE.OVERWORLD;
+                }
+            }
+        }
+
+        function startEnemyTurn() {
+            battleState = 2;
+            battleTimer = 300; // 5 seconds
+            battleBullets = [];
+            heartPos = {x: 320, y: 320};
+        }
+
+        function drawBattle() {
+            // BG
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0,0,640,480);
+
+            // Enemy
+            let bounce = Math.sin(globalFrame * 0.1) * 5;
+            drawFroggit(320, 150 + bounce, enemySpareable);
+
+            // Battle Box
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 4;
+            
+            if (battleState === 2) {
+                 // Small Box for dodging
+                 ctx.strokeRect(250, 250, 140, 140);
+                 
+                 // Heart
+                 ctx.fillStyle = 'red';
+                 ctx.save();
+                 ctx.translate(heartPos.x, heartPos.y);
+                 ctx.fill(SVG_HEART);
+                 ctx.restore();
+
+                 // Bullets (Flies)
+                 ctx.fillStyle = 'white';
+                 battleBullets.forEach(b => {
+                     ctx.fillRect(b.x, b.y, 4, 4);
+                 });
+
+            } else {
+                // Large Box for text
+                ctx.strokeRect(50, 250, 540, 140);
+                
+                // Text
+                ctx.fillStyle = 'white';
+                ctx.font = '18px "Press Start 2P"';
+                
+                if (battleState === 0) {
+                     ctx.fillText(`* ${battleText}`, 70, 290);
+                } else if (battleState === 1) {
+                     // Attack Graphic
+                     ctx.drawImage(drawAttackBg(), 70, 290);
+                     ctx.fillStyle = 'white';
+                     ctx.fillRect(70 + attackBarPos, 290, 10, 80);
+                } else if (battleState === 4) {
+                     if (battleSubMenu === 0) {
+                         ctx.fillText("* Комплимент", 100, 300);
+                     } else if (battleSubMenu === 1) {
+                         ctx.fillText("* Ирис. пирог", 100, 300);
+                     } else if (battleSubMenu === 2) {
+                         ctx.fillText(enemySpareable ? "* Пощадить (Желтый)" : "* Пощадить", 100, 300);
+                     } else {
+                         wrapText(ctx, `* ${battleText}`, 70, 290, 500, 30);
+                     }
+                } else if (battleState === 3) {
+                     ctx.fillText("ВЫ ПОБЕДИЛИ! +0 XP +0 G", 100, 300);
+                }
+            }
+
+            // UI Buttons
+            const buttons = ["БИТВА", "ДЕЙСТВИЕ", "ВЕЩЬ", "ПОЩАДА"];
+            const colors = ["#ff9933", "#3399ff", "#33cc33", "#ffff33"]; // Colors just for visual flair
+            
+            ctx.font = '20px "Press Start 2P"';
+            buttons.forEach((btn, i) => {
+                let x = 30 + i * 150;
+                let y = 430;
+                
+                if (battleState === 0 && battleMenuSelection === i) {
+                     ctx.fillStyle = 'yellow'; // Selected
+                     ctx.drawImage(drawHeartSprite(), x, y - 15);
+                     ctx.fillStyle = '#ff9933'; 
+                } else {
+                     ctx.fillStyle = '#ff9933';
+                     // Reset to normal orange
+                }
+                
+                // Draw Button border
+                ctx.strokeStyle = '#ff9933';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x + 20, y - 25, 110, 40);
+                ctx.fillText(btn, x + 30, y+5);
+            });
+
+            // Player HP
+            ctx.fillStyle = 'white';
+            ctx.font = '16px "Press Start 2P"';
+            ctx.fillText(`${player.name}   LV ${player.lv}`, 30, 405);
+            ctx.fillStyle = 'red';
+            ctx.fillRect(250, 390, player.maxHp * 1.5, 20);
+            ctx.fillStyle = 'yellow';
+            ctx.fillRect(250, 390, player.hp * 1.5, 20);
+            ctx.fillStyle = 'white';
+            ctx.fillText(`${player.hp} / ${player.maxHp}`, 300 + player.maxHp*1.5 + 20, 405);
+        }
+
+        function drawFroggit(x, y, spare) {
+             ctx.fillStyle = spare ? 'yellow' : 'white';
+             ctx.beginPath();
+             ctx.ellipse(x, y, 60, 40, 0, 0, Math.PI*2); // Body
+             ctx.fill();
+             
+             ctx.fillStyle = 'black';
+             ctx.beginPath();
+             ctx.arc(x-20, y-10, 5, 0, Math.PI*2); // Eyes
+             ctx.arc(x+20, y-10, 5, 0, Math.PI*2);
+             ctx.fill();
+
+             // Legs
+             ctx.strokeStyle = spare ? 'yellow' : 'white';
+             ctx.lineWidth = 4;
+             ctx.beginPath();
+             ctx.moveTo(x-40, y+20); ctx.lineTo(x-60, y+40);
+             ctx.moveTo(x+40, y+20); ctx.lineTo(x+60, y+40);
+             ctx.stroke();
+        }
+
+        function drawAttackBg() {
+            // Create an offscreen canvas for the attack bg to save performance
+            let c = document.createElement('canvas');
+            c.width = 500; c.height = 80;
+            let cx = c.getContext('2d');
+            cx.fillStyle = 'gray';
+            cx.fillRect(0, 0, 500, 80);
+            cx.fillStyle = 'white';
+            cx.beginPath();
+            cx.ellipse(250, 40, 20, 70, 0, 0, Math.PI*2); // Target eye
+            cx.fill();
+            return c;
+        }
+
+        function drawHeartSprite() {
+             let c = document.createElement('canvas');
+             c.width = 20; c.height = 20;
+             let cx = c.getContext('2d');
+             cx.fillStyle = 'red';
+             let p = new Path2D("M8 0 L8 4 L4 4 L4 8 L0 8 L0 18 L8 26 L16 18 L16 8 L12 8 L12 4 L8 4 Z");
+             cx.scale(0.8, 0.8);
+             cx.fill(p);
+             return c;
+        }
+
+        // Utils
+        function dist(a, b) {
+            return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+        }
+
+        function wrapText(context, text, x, y, maxWidth, lineHeight) {
+            let words = text.split(' ');
+            let line = '';
+
+            for(let n = 0; n < words.length; n++) {
+                let testLine = line + words[n] + ' ';
+                let metrics = context.measureText(testLine);
+                let testWidth = metrics.width;
+                if (testWidth > maxWidth && n > 0) {
+                    context.fillText(line, x, y);
+                    line = words[n] + ' ';
+                    y += lineHeight;
+                } else {
+                    line = testLine;
+                }
+            }
+            context.fillText(line, x, y);
+        }
+
+        function drawStar(cx, cy, spikes, outerRadius, innerRadius) {
+            let rot = Math.PI / 2 * 3;
+            let x = cx;
+            let y = cy;
+            let step = Math.PI / spikes;
+
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - outerRadius);
+            for (let i = 0; i < spikes; i++) {
+                x = cx + Math.cos(rot) * outerRadius;
+                y = cy + Math.sin(rot) * outerRadius;
+                ctx.lineTo(x, y);
+                rot += step;
+
+                x = cx + Math.cos(rot) * innerRadius;
+                y = cy + Math.sin(rot) * innerRadius;
+                ctx.lineTo(x, y);
+                rot += step;
+            }
+            ctx.lineTo(cx, cy - outerRadius);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        /**
+         * GAME LOOP
+         */
+        function gameLoop() {
+            globalFrame++;
+            
+            // Clear Screen handled in draw functions or here
+            ctx.clearRect(0,0,640,480);
+
+            switch(currentState) {
+                case STATE.START:
+                    updateStart();
+                    drawStart();
+                    break;
+                case STATE.INTRO:
+                    updateIntro();
+                    drawIntro();
+                    break;
+                case STATE.OVERWORLD:
+                    updateOverworld();
+                    drawOverworld();
+                    break;
+                case STATE.BATTLE:
+                    updateBattle();
+                    drawBattle();
+                    break;
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start
+        requestAnimationFrame(gameLoop);
+
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
